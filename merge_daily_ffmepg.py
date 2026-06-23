@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 
@@ -21,7 +22,7 @@ def extract_start_time_from_filename(file_name):
         return match.group(1)
     return None
 
-def merge_videos(input_folder, output_folder, delete_old_videos):
+def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, before_date):
     input_folder = input_folder.encode('gbk').decode('gb2312')
     logging.info(f"Starting video merging process..., input is {input_folder}")
     # 确保输出文件夹存在
@@ -83,10 +84,9 @@ def merge_videos(input_folder, output_folder, delete_old_videos):
         if file_name.endswith(('.mp4', '.avi', '.mov')):  # 检查文件扩展名
             key = extract_date_from_filename(file_name)
             if key:
-                current_file_date = datetime.strptime(key, "%Y%m%d")
-                today_date = datetime.now().date()
-                if current_file_date.date() == today_date:
-                    logging.info(f"Skipping today's video {file_name}")
+                # 跳过 >= before_date 的视频
+                if key >= before_date:
+                    logging.info(f"Skipping {key} video {file_name} (before cutoff: {before_date})")
                     continue
                 if key not in exist_videos_dict and ( max_date is None or current_file_date > max_date):
                     video_path = os.path.join(input_folder, file_name)
@@ -116,13 +116,34 @@ def merge_videos(input_folder, output_folder, delete_old_videos):
 
         # 使用ffmpeg合并视频
         output_path = os.path.join(output_folder, f"{key}_merged.mp4")
-        cmd = f"ffmpeg -f concat -safe 0 -i {tmp_file} -c copy {output_path}"
-        subprocess.run(cmd, shell=True, check=True)
-        logging.info(f"Merged video saved to {output_path}")
+        merge_command = [
+            "ffmpeg",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", tmp_file,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "64k",
+            "-ar", "16000",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        result = subprocess.run(merge_command)
 
-        # 删除临时文件
-        os.remove(tmp_file)
-        logging.info(f"Temporary file {tmp_file} deleted")
+        # 只合并成功时才打印消息并清理临时文件
+        if result.returncode == 0:
+            logging.info(f"Merged video saved to {output_path}")
+            os.remove(tmp_file)
+            logging.info(f"Temporary file {tmp_file} deleted")
+
+            # 合并成功后删除源文件
+            if delete_source:
+                for video_path in video_paths:
+                    os.remove(video_path)
+                    logging.info(f"Deleted source file: {video_path}")
+        else:
+            logging.error(f"FFmpeg merge failed for {key}, return code: {result.returncode}")
+            logging.error(f"Temporary file retained: {tmp_file}")
 
     logging.info("Video merging process completed.")
 
@@ -131,9 +152,14 @@ def main():
     parser.add_argument("--input", type=str, help="Input folder path containing videos", required=True)
     parser.add_argument("--output", type=str, help="Output folder path for merged videos", required=True)
     parser.add_argument("--delete-old-videos", action="store_true", help="Delete videos older than two weeks (default: False)")
+    parser.add_argument("--delete-source", action="store_true",
+                        help="Delete source video files after successful merge (default: False)")
+    parser.add_argument("--before-date", type=str,
+                        help="Only merge videos before this date (YYYYMMDD, default: yesterday)")
     args = parser.parse_args()
 
-    merge_videos(args.input, args.output, args.delete_old_videos)
+    before_date = args.before_date if args.before_date else (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    merge_videos(args.input, args.output, args.delete_old_videos, args.delete_source, before_date)
 
 if __name__ == "__main__":
     main()

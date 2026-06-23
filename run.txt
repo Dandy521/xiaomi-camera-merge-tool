@@ -1,0 +1,6 @@
+python all_in_one_merger.py \
+  --old-cam \
+  --delete-source \
+  --before-date 20260620 \
+  --input "/d/data/tmp/MIJIA_RECORD_VIDEO_202112_tmp" \
+  --output "/d/data/tmp/tmp_output"
