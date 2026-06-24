@@ -34,7 +34,7 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
     videos_dict = {}
     exist_videos_dict = {}
     for file_name in os.listdir(output_folder):
-        if file_name.endswith(('.mp4', '.avi', '.mov')):  # 检查文件扩展名
+        if file_name.endswith(('.mp4', '.mkv', '.avi', '.mov')):  # 检查文件扩展名
             date_prefix = extract_date_from_filename(file_name)
             if date_prefix:
                 logging.info(f"Found exist video {file_name} with date prefix {date_prefix}")
@@ -67,7 +67,7 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
         logging.info("Cleaning up videos older than two weeks...")
         weeks_ago = datetime.now() - timedelta(weeks=1)
         for file_name in os.listdir(output_folder):
-            if file_name.endswith(('.mp4', '.avi', '.mov')):
+            if file_name.endswith(('.mp4', '.mkv', '.avi', '.mov')):  # delete-old-videos section
                 try:
                     old_file_date = extract_date_from_filename(file_name)
                     if old_file_date:
@@ -114,24 +114,26 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
             for video_path in video_paths:
                 f.write(f"file '{video_path}'\n")
 
-        # 使用ffmpeg合并视频
-        output_path = os.path.join(output_folder, f"{key}_merged.mp4")
+        # 使用ffmpeg合并视频（先输出到临时文件，成功后再改名）
+        output_path = os.path.join(output_folder, f"{key}_merged.mkv")
+        tmp_output_path = os.path.join(output_folder, f"{key}_merged.mkv.tmp")
         merge_command = [
             "ffmpeg",
             "-f", "concat",
             "-safe", "0",
             "-i", tmp_file,
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "64k",
-            "-ar", "16000",
-            "-movflags", "+faststart",
-            output_path
+            "-c", "copy",
+            "-fflags", "+genpts",
+            "-avoid_negative_ts", "make_zero",
+            "-y",
+            tmp_output_path
         ]
         result = subprocess.run(merge_command)
 
         # 只合并成功时才打印消息并清理临时文件
         if result.returncode == 0:
+            # 原子改名：避免中断导致残留不完整文件
+            os.rename(tmp_output_path, output_path)
             logging.info(f"Merged video saved to {output_path}")
             os.remove(tmp_file)
             logging.info(f"Temporary file {tmp_file} deleted")
@@ -143,6 +145,8 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
                     logging.info(f"Deleted source file: {video_path}")
         else:
             logging.error(f"FFmpeg merge failed for {key}, return code: {result.returncode}")
+            if os.path.exists(tmp_output_path):
+                os.remove(tmp_output_path)
             logging.error(f"Temporary file retained: {tmp_file}")
 
     logging.info("Video merging process completed.")

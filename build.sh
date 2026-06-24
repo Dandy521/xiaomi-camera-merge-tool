@@ -1,0 +1,1 @@
+docker build -t xiaomi-camera-merge-tool:v1.0 -f Dockerfile .

@@ -15,8 +15,8 @@ def merge_videos(input_path, output_path, delete_old_videos, delete_source, befo
     daily_videos = defaultdict(list)
     daily_source_folders = defaultdict(list)  # date_str -> [folder_path, ...]
 
-    # 遍历输入路径中的所有文件夹
-    for folder_name in os.listdir(input_path):
+    # 遍历输入路径中的所有文件夹（按文件夹名排序，保证时间顺序）
+    for folder_name in sorted(os.listdir(input_path)):
         folder_path = os.path.join(input_path, folder_name)
 
         # 确保是文件夹
@@ -54,7 +54,7 @@ def merge_videos(input_path, output_path, delete_old_videos, delete_source, befo
     if delete_old_videos:
         weeks_ago = datetime.now() - timedelta(weeks=1)
         for file_name in os.listdir(output_path):
-            if file_name.endswith(('.mp4', '.avi', '.mov')):
+            if file_name.endswith(('.mp4', '.mkv', '.avi', '.mov')):
                 try:
                     # 从文件名中提取日期前缀（格式：{YYYYMMDD}_daily_merged.mp4）
                     file_date_str = file_name[:8]
@@ -68,7 +68,8 @@ def merge_videos(input_path, output_path, delete_old_videos, delete_source, befo
 
     # 合并每天的视频
     for date, video_list in daily_videos.items():
-        daily_output_file = os.path.join(output_path, f"{date}_daily_merged.mp4")
+        daily_output_file = os.path.join(output_path, f"{date}_daily_merged.mkv")
+        daily_tmp_file = os.path.join(output_path, f"{date}_daily_merged.mkv.tmp")
 
         # 检查是否已经合并过
         if os.path.exists(daily_output_file):
@@ -85,20 +86,21 @@ def merge_videos(input_path, output_path, delete_old_videos, delete_source, befo
             "ffmpeg",
             "-f", "concat",
             "-safe", "0",
-            "-i", daily_filelist_path,  # 使用 output_path 下的文件列表
-            "-c:v", "copy", 
-            "-c:a", "aac",
-            "-b:a", "64k",
-            "-ar", "16000",
-            "-movflags","+faststart",
-            daily_output_file
+            "-i", daily_filelist_path,
+            "-c", "copy",
+            "-fflags", "+genpts",
+            "-avoid_negative_ts", "make_zero",
+            "-y",
+            daily_tmp_file
         ]
 
-        # 调用 FFmpeg 合并视频
+        # 调用 FFmpeg 合并视频（先输出到临时文件，成功后再改名）
         result = subprocess.run(merge_command)
 
         # 只合并成功时才打印消息并清理临时文件
         if result.returncode == 0:
+            # 原子改名：避免中断导致残留不完整文件
+            os.rename(daily_tmp_file, daily_output_file)
             print(f"Merged daily video saved to: {daily_output_file}")
             os.remove(daily_filelist_path)
 
@@ -109,6 +111,9 @@ def merge_videos(input_path, output_path, delete_old_videos, delete_source, befo
                     print(f"Deleted source folder: {folder_path}")
         else:
             print(f"FFmpeg merge failed for {date}, return code: {result.returncode}")
+            # 清理失败的临时输出文件
+            if os.path.exists(daily_tmp_file):
+                os.remove(daily_tmp_file)
             print(f"Temporary file retained: {daily_filelist_path}")
 
 
