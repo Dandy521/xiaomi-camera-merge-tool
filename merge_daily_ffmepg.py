@@ -125,6 +125,7 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
             "-c", "copy",
             "-fflags", "+genpts",
             "-avoid_negative_ts", "make_zero",
+            "-f", "matroska",
             "-y",
             tmp_output_path
         ]

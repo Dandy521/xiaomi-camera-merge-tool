@@ -90,6 +90,7 @@ def merge_videos(input_path, output_path, delete_old_videos, delete_source, befo
             "-c", "copy",
             "-fflags", "+genpts",
             "-avoid_negative_ts", "make_zero",
+            "-f", "matroska",
             "-y",
             daily_tmp_file
         ]
