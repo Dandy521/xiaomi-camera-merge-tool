@@ -2,12 +2,32 @@ import argparse
 import logging
 import os
 import re
-import shutil
 import subprocess
 from datetime import datetime, timedelta
 
 # 设置日志配置为INFO级别
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def validate_video_file(filepath):
+    """用 ffprobe 快速检测视频文件是否可读（仅读头部，不解码）。
+    返回 (is_valid, error_message)
+    """
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return False, result.stderr.strip()
+    # 即使头部可读，也校验 duration 是否大于 0
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError:
+        return False, f"ffprobe returned non-numeric duration: {result.stdout.strip()}"
+    if duration <= 0:
+        return False, f"Duration is {duration}s (file may contain no valid frames)"
+    return True, None
 
 
 def extract_date_from_filename(file_name):
@@ -88,6 +108,7 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
                 if key >= before_date:
                     logging.info(f"Skipping {key} video {file_name} (before cutoff: {before_date})")
                     continue
+                current_file_date = datetime.strptime(key, "%Y%m%d")
                 if key not in exist_videos_dict and ( max_date is None or current_file_date > max_date):
                     video_path = os.path.join(input_folder, file_name)
                     logging.info(f"Found video {file_name} with prefix {key}")
@@ -108,10 +129,29 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
     # 合并视频
     for key, video_paths in videos_dict.items():
         logging.info(f"Merging videos with prefix {key}...")
-        # 创建一个临时文件列表
+        # 创建一个临时文件列表（先用 ffprobe 过滤损坏文件）
+        valid_paths = []
+        invalid_paths = []
+        for video_path in video_paths:
+            is_valid, err_msg = validate_video_file(video_path)
+            if is_valid:
+                valid_paths.append(video_path)
+            else:
+                invalid_paths.append((video_path, err_msg))
+                logging.warning(f"Corrupt file excluded: {video_path}")
+                logging.warning(f"  ffprobe: {err_msg}")
+
+        if invalid_paths:
+            logging.warning(f"Excluded {len(invalid_paths)} corrupt file(s) for {key}, "
+                            f"{len(valid_paths)} valid file(s) remaining")
+
+        if not valid_paths:
+            logging.error(f"No valid video files for {key}, skipping merge")
+            continue
+
         tmp_file = os.path.join(output_folder, f"tmp_{key}.txt")
         with open(tmp_file, 'w') as f:
-            for video_path in video_paths:
+            for video_path in valid_paths:
                 f.write(f"file '{video_path}'\n")
 
         # 使用ffmpeg合并视频（先输出到临时文件，成功后再改名）
@@ -129,10 +169,21 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
             "-y",
             tmp_output_path
         ]
-        result = subprocess.run(merge_command)
+        result = subprocess.run(merge_command, capture_output=True, text=True)
+
+        # 检查 stderr 中是否有跳文件 / 文件损坏等关键错误
+        # ffmpeg 的 concat demuxer 在跳过损坏文件后仍可能返回 0，需要自行判断
+        stderr_output = result.stderr if result.stderr else ""
+        critical_errors = [
+            "Impossible to open",
+            "moov atom not found",
+            "Error during demuxing",
+            "Invalid data found when processing input",
+        ]
+        has_critical_error = any(err in stderr_output for err in critical_errors)
 
         # 只合并成功时才打印消息并清理临时文件
-        if result.returncode == 0:
+        if result.returncode == 0 and not has_critical_error:
             # 原子改名：避免中断导致残留不完整文件
             os.rename(tmp_output_path, output_path)
             logging.info(f"Merged video saved to {output_path}")
@@ -145,7 +196,12 @@ def merge_videos(input_folder, output_folder, delete_old_videos, delete_source, 
                     os.remove(video_path)
                     logging.info(f"Deleted source file: {video_path}")
         else:
-            logging.error(f"FFmpeg merge failed for {key}, return code: {result.returncode}")
+            if has_critical_error:
+                logging.error(f"FFmpeg merge may be incomplete for {key}: critical errors detected in stderr")
+                logging.error(f"FFmpeg stderr: {stderr_output}")
+            else:
+                logging.error(f"FFmpeg merge failed for {key}, return code: {result.returncode}")
+                logging.error(f"FFmpeg stderr: {stderr_output}")
             if os.path.exists(tmp_output_path):
                 os.remove(tmp_output_path)
             logging.error(f"Temporary file retained: {tmp_file}")
@@ -156,7 +212,7 @@ def main():
     parser = argparse.ArgumentParser(description="Merge videos with the same prefix using ffmpeg.")
     parser.add_argument("--input", type=str, help="Input folder path containing videos", required=True)
     parser.add_argument("--output", type=str, help="Output folder path for merged videos", required=True)
-    parser.add_argument("--delete-old-videos", action="store_true", help="Delete videos older than two weeks (default: False)")
+    parser.add_argument("--delete-old-videos", action="store_true", help="Delete videos older than one week (default: False)")
     parser.add_argument("--delete-source", action="store_true",
                         help="Delete source video files after successful merge (default: False)")
     parser.add_argument("--before-date", type=str,
